@@ -21,7 +21,7 @@ Tested on **Proxmox VE 7 and 8**.
 ## Installation
 
 ```bash
-git clone https://github.com/my5t3ry/machine-to-proxmox-lxc-ct-converter.git
+git clone https://github.com/Intersepter/Proxmox-VM-to-LXC.git
 cd machine-to-proxmox-lxc-ct-converter
 chmod +x convert.sh bashconvert
 ```
