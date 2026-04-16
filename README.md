@@ -15,8 +15,8 @@ Converts a running GNU/Linux machine or VM into a Proxmox LXC container by pulli
 ## Installation
 
 ```bash
-git clone https://github.com/my5t3ry/machine-to-proxmox-lxc-ct-converter.git
-cd machine-to-proxmox-lxc-ct-converter
+git clone https://github.com/Intersepter/Proxmox-VM-to-LXC
+cd Proxmox-VM-to-LXC
 chmod +x convert.sh bashconvert
 ```
 
