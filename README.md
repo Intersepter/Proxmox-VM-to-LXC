@@ -1,7 +1,4 @@
-# GNU/Linux Machine to Proxmox LXC Container Converter
-
-[![GitHub contributors](https://img.shields.io/github/contributors/my5t3ry/machine-to-proxmox-lxc-ct-converter.svg)](https://github.com/my5t3ry/machine-to-proxmox-lxc-ct-converter/contributors)
-[![GitHub stars](https://img.shields.io/github/stars/my5t3ry/machine-to-proxmox-lxc-ct-converter.svg)](https://github.com/my5t3ry/machine-to-proxmox-lxc-ct-converter/stargazers)
+# VMs to Proxmox LXC Container Converter
 
 Converts a running GNU/Linux machine or VM into a Proxmox LXC container by pulling its filesystem over SSH and importing it with `pct create`. Works with Proxmox VE 7 and 8.
 
