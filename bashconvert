@@ -1,0 +1,251 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------
+# bashconvert — non-interactive CLI frontend for the LXC converter
+# Requires: pct (Proxmox host), sshpass (if using password auth), iproute2
+# -------------------------------------------------------------------------
+
+if ! command -v pct &> /dev/null; then
+    echo "Error: 'pct' not found. This script must be run on the Proxmox host." >&2
+    exit 1
+fi
+
+# -------------------------------------------------------------------------
+usage()
+{
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Converts a running GNU/Linux machine into a Proxmox LXC container by pulling
+its filesystem over SSH and importing it with 'pct create'.
+
+Required options:
+  -n|--name         <hostname>      LXC container hostname
+  -t|--target       <address>       Target machine SSH address (e.g. 192.168.1.50)
+  -i|--id           <vmid>          Proxmox container ID (e.g. 200)
+  -s|--root-size    <GB>            Root filesystem size in GB (e.g. 8)
+  -a|--ip           <ip|dhcp>       Container IP or 'dhcp'
+  -b|--bridge       <bridge>        Proxmox bridge interface (e.g. vmbr0)
+  -m|--memory       <MB>            Memory in MB (e.g. 512)
+  -d|--disk-storage <pool>          Proxmox storage pool (e.g. local-lvm)
+  -p|--password     <password>      Container root password (min. 5 chars)
+
+Optional:
+  -P|--port         <port>          Target SSH port (default: 22)
+  -S|--ssh-password <password>      SSH password (omit to use key-based auth)
+  -c|--cidr         <prefix>        Subnet prefix (default: 24, ignored for dhcp)
+  -g|--gateway      <ip>            Gateway IP (required for static IP)
+  -C|--cores        <n>             CPU cores (default: 1)
+  -N|--nameserver   <ip>            DNS nameserver (default: 1.1.1.1)
+  -o|--ostype       <type>          OS type: debian, ubuntu, centos, fedora,
+                                    opensuse, archlinux, alpine, unmanaged
+                                    (default: unmanaged)
+  -u|--unprivileged                 Create unprivileged container (recommended)
+  -h|--help                         Show this help
+
+Examples:
+  # DHCP, unprivileged, key-based SSH auth:
+  $(basename "$0") -n myserver -t 192.168.1.50 -i 200 -s 8 \\
+    -a dhcp -b vmbr0 -m 512 -C 2 -d local-lvm -p secret -u
+
+  # Static IP, password SSH auth:
+  $(basename "$0") -n myserver -t 192.168.1.50 -i 200 -s 8 \\
+    -a 192.168.1.100 -c 24 -g 192.168.1.1 -b vmbr0 \\
+    -m 512 -C 2 -d local-lvm -p secret -S sshpass -o ubuntu -u
+EOF
+}
+
+# -------------------------------------------------------------------------
+# Filesystem collection — runs on the *target* machine via SSH.
+# Excludes volatile mounts and container/Docker runtime paths to prevent
+# "Cannot mknod" failures when Proxmox unpacks the archive into an
+# unprivileged namespace.
+# -------------------------------------------------------------------------
+collectFS()
+{
+    tar -czf - -C / \
+        --ignore-failed-read \
+        --warning=no-file-ignored \
+        --exclude="./sys" \
+        --exclude="./dev" \
+        --exclude="./run" \
+        --exclude="./proc" \
+        --exclude="./tmp" \
+        --exclude="./mnt" \
+        --exclude="./media" \
+        --exclude="./lost+found" \
+        --exclude="./var/tmp" \
+        --exclude="./var/cache/apt/archives" \
+        --exclude="./var/lib/docker" \
+        --exclude="./var/lib/containerd" \
+        --exclude="./var/lib/containers" \
+        --exclude="./var/lib/lxc" \
+        --exclude="./var/lib/lxd" \
+        --exclude="./var/lib/cni" \
+        --exclude="./var/snap" \
+        --exclude="./snap" \
+        --exclude="./run/docker" \
+        --exclude="./run/containerd" \
+        --exclude="*.log" \
+        --exclude="*.log.*" \
+        --exclude="*.gz" \
+        --exclude="*.sql" \
+        --exclude="./swap.img" \
+        --exclude="./swapfile" \
+        .
+}
+
+# -------------------------------------------------------------------------
+# Defaults
+port=22
+cidr=24
+cores=1
+nameserver="1.1.1.1"
+ostype="unmanaged"
+unprivileged=0
+
+# Parse options
+options=$(getopt \
+    -o hn:t:P:i:s:a:c:b:g:m:C:d:p:S:N:o:u \
+    -l help,name:,target:,port:,id:,root-size:,ip:,cidr:,bridge:,gateway:,memory:,cores:,disk-storage:,password:,ssh-password:,nameserver:,ostype:,unprivileged \
+    -- "$@") || { usage; exit 1; }
+
+eval set -- "$options"
+
+while true; do
+    case "$1" in
+        -h|--help)            usage; exit 0 ;;
+        -n|--name)            name="$2";        shift 2 ;;
+        -t|--target)          target="$2";      shift 2 ;;
+        -P|--port)            port="$2";        shift 2 ;;
+        -i|--id)              id="$2";          shift 2 ;;
+        -s|--root-size)       rootsize="$2";    shift 2 ;;
+        -a|--ip)              ip="$2";          shift 2 ;;
+        -c|--cidr)            cidr="$2";        shift 2 ;;
+        -b|--bridge)          bridge="$2";      shift 2 ;;
+        -g|--gateway)         gateway="$2";     shift 2 ;;
+        -m|--memory)          memory="$2";      shift 2 ;;
+        -C|--cores)           cores="$2";       shift 2 ;;
+        -d|--disk-storage)    storage="$2";     shift 2 ;;
+        -p|--password)        password="$2";    shift 2 ;;
+        -S|--ssh-password)    passwordSSH="$2"; shift 2 ;;
+        -N|--nameserver)      nameserver="$2";  shift 2 ;;
+        -o|--ostype)          ostype="$2";      shift 2 ;;
+        -u|--unprivileged)    unprivileged=1;   shift ;;
+        --)                   shift; break ;;
+        *)                    echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    esac
+done
+
+# -------------------------------------------------------------------------
+# Validate
+missing=()
+[ -z "$name" ]     && missing+=("--name")
+[ -z "$target" ]   && missing+=("--target")
+[ -z "$id" ]       && missing+=("--id")
+[ -z "$rootsize" ] && missing+=("--root-size")
+[ -z "$ip" ]       && missing+=("--ip")
+[ -z "$bridge" ]   && missing+=("--bridge")
+[ -z "$memory" ]   && missing+=("--memory")
+[ -z "$storage" ]  && missing+=("--disk-storage")
+[ -z "$password" ] && missing+=("--password")
+
+if [ "$ip" != "dhcp" ] && [ -z "$gateway" ]; then
+    missing+=("--gateway (required for static IP)")
+fi
+
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "Error: Missing required parameters:" >&2
+    printf '  %s\n' "${missing[@]}" >&2
+    echo "" >&2
+    usage
+    exit 1
+fi
+
+if [ "${#password}" -lt 5 ]; then
+    echo "Error: --password must be at least 5 characters." >&2
+    exit 1
+fi
+
+# -------------------------------------------------------------------------
+# Ensure sshpass is available when a password is provided
+if [ -n "$passwordSSH" ] && ! command -v sshpass &> /dev/null; then
+    echo "Installing sshpass..."
+    apt-get install -y sshpass
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install sshpass." >&2
+        exit 1
+    fi
+fi
+
+# -------------------------------------------------------------------------
+# Build net0 string
+if [ "$ip" = "dhcp" ]; then
+    net_param="name=eth0,bridge=${bridge},ip=dhcp"
+else
+    net_param="name=eth0,bridge=${bridge},ip=${ip}/${cidr},gw=${gateway}"
+fi
+
+# -------------------------------------------------------------------------
+# Pull filesystem
+tmpfile=$(mktemp /tmp/lxc-convert-XXXXXX.tar.gz)
+trap 'rm -f "$tmpfile"' EXIT
+
+echo "[1/2] Pulling filesystem from root@${target}:${port} ..."
+echo "      (excludes: docker, containerd, snap, tmp, dev, proc, sys, run, mnt)"
+
+if [ -n "$passwordSSH" ]; then
+    sshpass -p "$passwordSSH" ssh \
+        -p "$port" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        "root@$target" \
+        "$(declare -f collectFS); collectFS" > "$tmpfile"
+else
+    ssh \
+        -p "$port" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        "root@$target" \
+        "$(declare -f collectFS); collectFS" > "$tmpfile"
+fi
+
+rc=$?
+if [ $rc -ne 0 ] || [ ! -s "$tmpfile" ]; then
+    echo "Error: Failed to pull filesystem from $target (ssh exit $rc)." >&2
+    echo "       Check: SSH credentials, PermitRootLogin yes, connectivity." >&2
+    exit 1
+fi
+
+size_human=$(du -sh "$tmpfile" 2>/dev/null | cut -f1)
+echo "      Archive size: ${size_human}"
+
+# -------------------------------------------------------------------------
+# Create the container
+echo "[2/2] Creating LXC container $id ($name) ..."
+
+pct create "$id" "$tmpfile" \
+    --description "Converted LXC — source: $target" \
+    --hostname "$name" \
+    --ostype "$ostype" \
+    --features nesting=1 \
+    --memory "$memory" \
+    --cores "$cores" \
+    --nameserver "$nameserver" \
+    --net0 "$net_param" \
+    --unprivileged "$unprivileged" \
+    --rootfs "${storage}:${rootsize}" \
+    --password "$password" \
+    --start 1
+
+rc=$?
+if [ $rc -eq 0 ]; then
+    echo ""
+    echo "Success: Container $id ($name) created and started."
+    echo "         Connect: pct enter $id"
+else
+    echo ""
+    echo "Error: pct create failed (exit code $rc)." >&2
+    echo "       Check: journalctl -u pvedaemon  or the Proxmox web UI Tasks tab." >&2
+    exit $rc
+fi

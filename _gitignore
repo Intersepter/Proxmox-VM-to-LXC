@@ -1,0 +1,13 @@
+# Leftover temp archives from interrupted runs
+/tmp/lxc-convert-*.tar.gz
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# IDE folders
+.vscode/
+.idea/
