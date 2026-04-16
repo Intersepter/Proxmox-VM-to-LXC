@@ -22,7 +22,7 @@ Tested on **Proxmox VE 7 and 8**.
 
 ```bash
 git clone https://github.com/Intersepter/Proxmox-VM-to-LXC.git
-cd machine-to-proxmox-lxc-ct-converter
+cd Proxmox-VM-to-LXC
 chmod +x convert.sh bashconvert
 ```
 
